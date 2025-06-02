@@ -1,35 +1,36 @@
-# FastAPI et serveur
-fastapi>=0.100.0
-uvicorn[standard]>=0.20.0
-python-multipart
+# requirements.txt
 
-# Validation et modèles
-pydantic>=2.0.0
-pydantic-settings
+# Framework web
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
 
-# Cloud Storage (Cloudflare R2 - S3 compatible)
-boto3
-botocore
+# Configuration et environnement
+pydantic==2.11.4
+pydantic-settings==2.8.0
+python-dotenv==1.0.1
 
-# Azure Document Intelligence (OCR) - pour plus tard
-azure-ai-formrecognizer
-azure-core
+# Stockage cloud (Cloudflare R2 compatible S3)
+boto3==1.35.99
+botocore==1.35.99
 
-# Claude API (LLM) - pour plus tard
-anthropic
+# Azure Document Intelligence pour OCR
+azure-ai-formrecognizer==3.3.4
+azure-core==1.31.0
+
+# Claude LLM API
+anthropic==0.51.0
+
+# Traitement d'images (pour validation)
+Pillow==11.1.0
+
+# Logging structuré
+structlog==24.5.0
+
+# HTTP client pour tests
+httpx==0.28.1
+
+# Upload de fichiers
+python-multipart==0.0.17
 
 # Utilitaires
-python-dotenv
-httpx
-pillow
-
-# Logging
-structlog
-
-# Testing - optionnel pour l'instant
-pytest
-pytest-asyncio
-
-# Développement - optionnel pour l'instant
-black
-flake8
+aiofiles==24.1.0
