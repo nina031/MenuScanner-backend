@@ -1,0 +1,35 @@
+# FastAPI et serveur
+fastapi>=0.100.0
+uvicorn[standard]>=0.20.0
+python-multipart
+
+# Validation et modèles
+pydantic>=2.0.0
+pydantic-settings
+
+# Cloud Storage (Cloudflare R2 - S3 compatible)
+boto3
+botocore
+
+# Azure Document Intelligence (OCR) - pour plus tard
+azure-ai-formrecognizer
+azure-core
+
+# Claude API (LLM) - pour plus tard
+anthropic
+
+# Utilitaires
+python-dotenv
+httpx
+pillow
+
+# Logging
+structlog
+
+# Testing - optionnel pour l'instant
+pytest
+pytest-asyncio
+
+# Développement - optionnel pour l'instant
+black
+flake8
