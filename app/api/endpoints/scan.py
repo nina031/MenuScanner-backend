@@ -1,18 +1,17 @@
 # app/api/endpoints/scan.py
 import uuid
-from fastapi import APIRouter, UploadFile, File, HTTPException, Form
-from fastapi.responses import JSONResponse
-from typing import Optional
-import structlog
+import json
 import time
 from datetime import datetime
+from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi.responses import JSONResponse, StreamingResponse
+import structlog
 
 from app.core.config import settings
-from app.core.exceptions import FileValidationError, StorageError, PipelineError
+from app.core.exceptions import FileValidationError, StorageError
 from app.services.storage_service import storage_service
 from app.services.pipeline_service import pipeline_service
 from app.utils.validators import validate_image_file
-from app.models.response import ScanMenuResponse
 
 logger = structlog.get_logger()
 router = APIRouter()
@@ -142,186 +141,61 @@ async def upload_menu_image(
         )
 
 
-@router.post("/scan-menu", response_model=ScanMenuResponse)
-async def scan_menu_complete(
-    file: UploadFile = File(..., description="Image du menu à scanner et analyser"),
-    language_hint: Optional[str] = Form(default="fr", description="Langue principale du menu"),
-    cleanup_temp_file: Optional[bool] = Form(default=True, description="Supprimer le fichier temporaire après traitement")
-):
+@router.get("/scan-menu/{file_key:path}")
+async def scan_menu_processing(file_key: str):
     """
-    Endpoint principal : Upload + OCR + LLM en une seule requête.
+    Traite un menu en streaming à partir d'une image stockée dans R2.
     
-    Pipeline complet :
-    1. Validation du fichier image
-    2. Upload vers Cloudflare R2  
-    3. Extraction OCR avec Azure Document Intelligence
-    4. Structuration avec Claude LLM
-    5. Retour du menu structuré
+    Cette route streame en temps réel :
+    1. Le téléchargement de l'image
+    2. L'extraction OCR 
+    3. L'analyse de chaque section par l'IA
     
     Args:
-        file: Fichier image du menu (JPEG, PNG)
-        language_hint: Langue principale du menu (fr, en, es, etc.)
-        cleanup_temp_file: Supprimer le fichier temporaire après traitement
+        file_key: Clé du fichier dans R2
         
     Returns:
-        ScanMenuResponse: Menu structuré avec métadonnées
+        Stream: Messages JSON en streaming
     """
-    start_time = time.time()
-    scan_id = f"scan_{uuid.uuid4().hex[:12]}"
+    logger.info("🚀 Début traitement streaming pipeline réel", file_key=file_key)
     
-    logger.info(
-        "Début scan menu complet",
-        scan_id=scan_id,
-        filename=file.filename,
-        content_type=file.content_type,
-        language=language_hint
-    )
+    async def generate_stream():
+        """Générateur pour le streaming des données du pipeline réel."""
+        try:
+            # Utiliser le vrai pipeline de traitement
+            async for message in pipeline_service.stream_menu_processing(file_key):
+                # Formater chaque message en JSON avec saut de ligne
+                json_message = json.dumps(message, ensure_ascii=False)
+                yield f"data: {json_message}\n\n"
+                
+        except Exception as e:
+            logger.error("Erreur dans le pipeline streaming", error=str(e))
+            # Envoyer l'erreur en format SSE
+            error_message = {
+                "type": "error",
+                "error": str(e),
+                "file_key": file_key
+            }
+            json_error = json.dumps(error_message, ensure_ascii=False)
+            yield f"data: {json_error}\n\n"
     
-    try:
-        # 1. Validation du fichier
-        await validate_image_file(file)
-        
-        # 2. Lire le contenu du fichier
-        file_content = await file.read()
-        
-        # 3. Détecter l'extension
-        file_extension = _get_file_extension(file.filename, file.content_type)
-        
-        # 4. Upload vers R2
-        file_key = await storage_service.upload_temp_file(
-            file_content=file_content,
-            file_extension=file_extension,
-            content_type=file.content_type
-        )
-        
-        logger.info(
-            "Image uploadée, début du pipeline de traitement",
-            scan_id=scan_id,
-            file_key=file_key
-        )
-        
-        # 5. Lancer le pipeline complet
-        processing_options = {
-            "cleanup_temp_file": cleanup_temp_file
+    return StreamingResponse(
+        generate_stream(),
+        media_type="text/plain",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Headers": "*",
         }
-        
-        result = await pipeline_service.process_menu_image(
-            file_key=file_key,
-            scan_id=scan_id,
-            language_hint=language_hint,
-            processing_options=processing_options
-        )
-        
-        total_time = time.time() - start_time
-        
-        logger.info(
-            "Scan menu complet terminé",
-            scan_id=scan_id,
-            success=result.success,
-            total_time=total_time,
-            pipeline_time=result.processing_time_seconds
-        )
-        
-        return result
-        
-    except FileValidationError as e:
-        logger.warning(
-            "Validation fichier échouée",
-            scan_id=scan_id,
-            error=str(e),
-            filename=file.filename
-        )
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "success": False,
-                "message": f"Fichier invalide: {e.message}",
-                "error_code": e.error_code,
-                "scan_id": scan_id
-            }
-        )
-        
-    except StorageError as e:
-        logger.error(
-            "Erreur stockage dans scan complet",
-            scan_id=scan_id,
-            error=str(e)
-        )
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "success": False,
-                "message": "Erreur lors du stockage de l'image",
-                "error_code": getattr(e, 'error_code', 'STORAGE_ERROR'),
-                "scan_id": scan_id
-            }
-        )
-        
-    except PipelineError as e:
-        logger.error(
-            "Erreur pipeline dans scan complet",
-            scan_id=scan_id,
-            error=str(e)
-        )
-        raise HTTPException(
-            status_code=422,  # Unprocessable Entity
-            detail={
-                "success": False,
-                "message": f"Erreur de traitement: {e.message}",
-                "error_code": getattr(e, 'error_code', 'PIPELINE_ERROR'),
-                "scan_id": scan_id
-            }
-        )
-        
-    except Exception as e:
-        logger.error(
-            "Erreur inattendue dans scan complet",
-            scan_id=scan_id,
-            error=str(e),
-            filename=file.filename
-        )
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "success": False,
-                "message": "Erreur interne du serveur",
-                "scan_id": scan_id
-            }
-        )
+    )
 
 
-@router.get("/status/{scan_id}")
-async def get_scan_status(scan_id: str):
-    """
-    Récupère le statut d'un scan.
-    (Pour l'instant synchrone, mais préparé pour l'asynchrone)
-    
-    Args:
-        scan_id: ID unique du scan
-        
-    Returns:
-        Statut du traitement
-    """
-    try:
-        status = await pipeline_service.get_processing_status(scan_id)
-        
-        return JSONResponse(
-            status_code=200,
-            content={
-                "success": True,
-                "data": status
-            }
-        )
-        
-    except Exception as e:
-        logger.error("Erreur récupération statut", scan_id=scan_id, error=str(e))
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "success": False,
-                "message": "Erreur lors de la récupération du statut"
-            }
-        )
+@router.get("/test-simple")
+async def test_simple():
+    """Route de test ultra simple."""
+    print("🔥 ROUTE TEST SIMPLE APPELÉE")
+    return {"message": "Test simple fonctionne !"}
 
 
 @router.get("/file/{file_key}")
@@ -437,3 +311,143 @@ def _get_file_extension(filename: str, content_type: str) -> str:
     }
     
     return content_type_map.get(content_type, '.jpg')
+
+@router.post("/scan-menu-stream")
+async def scan_menu_stream(
+    file: UploadFile = File(..., description="Image du menu à traiter en streaming")
+):
+    """
+    Upload + traitement streaming d'un menu en une seule requête.
+    
+    Cette route combine :
+    1. Upload de l'image vers R2
+    2. Traitement streaming (OCR + LLM par sections)
+    
+    Args:
+        file: Fichier image (JPEG, PNG)
+        
+    Returns:
+        Stream: Messages NDJSON en streaming
+    """
+    start_time = time.time()
+    scan_id = f"scan_{uuid.uuid4().hex[:12]}"
+    
+    logger.info(
+        "🚀 Début scan menu streaming",
+        scan_id=scan_id,
+        filename=file.filename,
+        content_type=file.content_type
+    )
+    
+    async def generate_stream():
+        """Générateur pour le streaming upload + traitement."""
+        try:
+            # 1. Validation et upload
+            yield json.dumps({
+                "type": "status",
+                "message": "Validation et upload de l'image...",
+                "step": "upload",
+                "scan_id": scan_id
+            }) + "\n"
+            
+            # Validation du fichier
+            await validate_image_file(file)
+            
+            # Lire le contenu du fichier
+            file_content = await file.read()
+            
+            # Upload vers R2
+            file_extension = _get_file_extension(file.filename, file.content_type)
+            file_key = await storage_service.upload_temp_file(
+                file_content=file_content,
+                file_extension=file_extension,
+                content_type=file.content_type
+            )
+            
+            yield json.dumps({
+                "type": "step_complete",
+                "step": "upload",
+                "file_key": file_key,
+                "file_size_bytes": len(file_content)
+            }) + "\n"
+            
+            # 2. Traitement streaming via le pipeline
+            async for message in pipeline_service.stream_menu_processing(file_key):
+                # Transformer les messages du pipeline pour le frontend
+                if message["type"] == "section_complete":
+                    # Message compatible avec votre frontend
+                    yield json.dumps({
+                        "type": "section",
+                        "section": message["section"]
+                    }) + "\n"
+                elif message["type"] == "complete":
+                    # Créer le menu final avec toutes les sections
+                    # Note: vous devrez collecter toutes les sections pour créer le menu final
+                    yield json.dumps({
+                        "type": "complete",
+                        "menu": {
+                            "name": "Menu",  # Vous pouvez récupérer le vrai nom du menu_metadata
+                            "sections": []   # Vous devrez collecter les sections
+                        }
+                    }) + "\n"
+                elif message["type"] == "error":
+                    # Erreur
+                    yield json.dumps({
+                        "type": "error",
+                        "error": message["error"]
+                    }) + "\n"
+                else:
+                    # Autres messages (status, etc.) - les passer tels quels
+                    yield json.dumps(message) + "\n"
+            
+            # 3. Nettoyage optionnel du fichier temporaire
+            try:
+                await storage_service.delete_temp_file(file_key)
+                logger.info("Fichier temporaire supprimé", file_key=file_key)
+            except Exception as cleanup_error:
+                logger.warning("Erreur nettoyage fichier", error=str(cleanup_error))
+            
+            total_time = time.time() - start_time
+            logger.info(
+                "Scan streaming terminé",
+                scan_id=scan_id,
+                total_time=total_time
+            )
+                
+        except FileValidationError as e:
+            error_msg = {
+                "type": "error",
+                "error": f"Fichier invalide: {e.message}",
+                "error_code": e.error_code,
+                "scan_id": scan_id
+            }
+            yield json.dumps(error_msg) + "\n"
+            
+        except StorageError as e:
+            error_msg = {
+                "type": "error", 
+                "error": "Erreur de stockage",
+                "error_code": getattr(e, 'error_code', 'STORAGE_ERROR'),
+                "scan_id": scan_id
+            }
+            yield json.dumps(error_msg) + "\n"
+            
+        except Exception as e:
+            logger.error("Erreur scan streaming", scan_id=scan_id, error=str(e))
+            error_msg = {
+                "type": "error",
+                "error": str(e),
+                "scan_id": scan_id
+            }
+            yield json.dumps(error_msg) + "\n"
+    
+    return StreamingResponse(
+        generate_stream(),
+        media_type="application/x-ndjson",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Headers": "*",
+        }
+    )

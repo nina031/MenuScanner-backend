@@ -1,11 +1,11 @@
 # app/services/ocr_service.py
 import asyncio
+import time
+from typing import Dict, Any
 from azure.ai.formrecognizer import DocumentAnalysisClient
 from azure.core.credentials import AzureKeyCredential
 from azure.core.exceptions import HttpResponseError
-from typing import Dict, Any
 import structlog
-import time
 
 from app.core.config import settings
 from app.core.exceptions import OCRError
@@ -14,9 +14,10 @@ logger = structlog.get_logger()
 
 
 class OCRService:
-    """Service OCR simplifié - juste extraction de texte."""
+    """Service OCR avec Azure Document Intelligence."""
     
     def __init__(self):
+        """Initialise le client Azure OCR."""
         try:
             self.client = DocumentAnalysisClient(
                 endpoint=settings.azure_doc_intelligence_endpoint,
@@ -24,14 +25,27 @@ class OCRService:
             )
             logger.info("Client Azure OCR initialisé")
         except Exception as e:
-            raise OCRError(f"Impossible d'initialiser Azure OCR: {e}")
+            logger.error("Erreur lors de l'initialisation du client Azure OCR", error=str(e))
+            raise OCRError(f"Impossible d'initialiser le client Azure OCR: {e}")
     
-    async def extract_text_from_image(self, image_data: bytes) -> Dict[str, Any]:
-        """Extrait le texte d'une image avec Azure Document Intelligence."""
+    async def extract_text_from_image(self, image_data: bytes) -> str:
+        """
+        Extrait le texte d'une image avec Azure Document Intelligence.
+        
+        Args:
+            image_data: Données de l'image
+            
+        Returns:
+            str: Texte extrait (pas un dict !)
+        """
         start_time = time.time()
         
         try:
             logger.info("Début OCR", size_bytes=len(image_data))
+            
+            # Vérifier que le client existe
+            if not hasattr(self, 'client') or self.client is None:
+                raise OCRError("Client Azure OCR non initialisé")
             
             # OCR avec Azure
             poller = self.client.begin_analyze_document(
@@ -64,13 +78,8 @@ class OCRService:
                 processing_time=processing_time
             )
             
-            return {
-                "raw_text": raw_text.strip(),
-                "metadata": {
-                    "processing_time_seconds": round(processing_time, 3),
-                    "page_count": len(result.pages)
-                }
-            }
+            # RETOURNER JUSTE LA STRING, pas un dict
+            return raw_text.strip()
             
         except HttpResponseError as e:
             if e.status_code == 401:
@@ -83,29 +92,7 @@ class OCRService:
         except Exception as e:
             logger.error("Erreur OCR", error=str(e))
             raise OCRError(f"Erreur OCR: {e}")
-    
-    async def check_connection(self) -> bool:
-        """Test de connexion simple."""
-        try:
-            # Image test 1x1 pixel
-            test_image = b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\nIDAT\x08\x1dc\xf8\x00\x00\x00\x01\x00\x01\xab\xb4\x1b\xc6\x00\x00\x00\x00IEND\xaeB`\x82'
-            
-            poller = self.client.begin_analyze_document(
-                model_id="prebuilt-read",
-                document=test_image
-            )
-            
-            await asyncio.wait_for(
-                asyncio.get_event_loop().run_in_executor(None, poller.result),
-                timeout=30.0
-            )
-            
-            return True
-            
-        except Exception as e:
-            logger.error("Test connexion Azure failed", error=str(e))
-            return False
 
 
-# Instance globale
+# Instance globale du service
 ocr_service = OCRService()
