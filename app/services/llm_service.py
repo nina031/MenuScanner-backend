@@ -1,14 +1,14 @@
 # app/services/llm_service.py
 import json
 import time
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from anthropic import Anthropic
 from anthropic.types import MessageParam
 import structlog
 
 from app.core.config import settings
 from app.core.exceptions import LLMError
-from app.models.response import MenuData
+from app.models.response import MenuData, MenuSection, MenuItem, Price
 
 logger = structlog.get_logger()
 
@@ -27,7 +27,7 @@ class LLMService:
     
     async def structure_menu_text(self, ocr_text: str, language_hint: str = "fr") -> MenuData:
         """
-        Structure le texte OCR en menu JSON avec Claude.
+        Structure le texte OCR en menu JSON avec Claude (méthode originale).
         
         Args:
             ocr_text: Texte brut extrait par OCR
@@ -109,10 +109,214 @@ class LLMService:
                 )
             else:
                 raise LLMError(f"Erreur Claude: {e}")
+
+    async def detect_sections_and_title(self, ocr_text: str) -> Dict[str, Any]:
+        """
+        Détecte uniquement les sections et le titre du menu.
+        
+        Args:
+            ocr_text: Texte OCR complet
+            
+        Returns:
+            Dict contenant menu_title et sections
+        """
+        start_time = time.time()
+        
+        try:
+            logger.info("Début détection sections", text_length=len(ocr_text))
+            
+            prompt = """Analyse ce texte OCR de menu et retourne UNIQUEMENT un JSON avec les sections et le titre:
+
+{
+  "menu_title": "Nom du restaurant/menu ou null",
+  "sections": ["SECTION1", "SECTION2", "SECTION3"]
+}
+
+Instructions:
+1. Identifie le titre/nom du restaurant (généralement en haut du menu)
+2. Liste toutes les sections du menu (ENTRÉES, PLATS, DESSERTS, PIZZAS, etc.)
+3. Garde les noms EXACTS des sections comme ils apparaissent dans le texte
+4. Retourne UNIQUEMENT le JSON, sans texte additionnel"""
+            
+            response = self.client.messages.create(
+                model="claude-3-5-sonnet-20241022",
+                max_tokens=1000,
+                temperature=0,
+                system=prompt,
+                messages=[{"role": "user", "content": ocr_text}]
+            )
+            
+            response_text = response.content[0].text if response.content else ""
+            cleaned_response = self._clean_json_response(response_text)
+            result = json.loads(cleaned_response)
+            
+            processing_time = time.time() - start_time
+            
+            logger.info(
+                "Détection sections terminée",
+                menu_title=result.get("menu_title"),
+                sections_count=len(result.get("sections", [])),
+                processing_time=processing_time
+            )
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Erreur détection sections: {e}")
+            return {"menu_title": "Menu", "sections": []}
+
+    def extract_sections_content(self, ocr_text: str, section_names: List[str]) -> Dict[str, str]:
+        """
+        Extrait le contenu de chaque section du texte OCR.
+        
+        Args:
+            ocr_text: Texte OCR complet
+            section_names: Liste des noms de sections détectées
+            
+        Returns:
+            Dict mapping nom_section -> contenu_section
+        """
+        sections_content = {}
+        lines = ocr_text.split('\n')
+        
+        for section_name in section_names:
+            content = []
+            capturing = False
+            
+            for line in lines:
+                # Début de notre section (recherche flexible)
+                if section_name.upper() in line.upper().replace(" ", ""):
+                    capturing = True
+                    continue
+                elif capturing:
+                    # Arrêter si on trouve une autre section
+                    if any(other_section.upper() in line.upper().replace(" ", "")
+                          for other_section in section_names 
+                          if other_section != section_name):
+                        break
+                    content.append(line)
+            
+            sections_content[section_name] = '\n'.join(content).strip()
+        
+        logger.info(
+            "Extraction contenu sections terminée",
+            sections_extracted=len(sections_content)
+        )
+        
+        return sections_content
+
+    async def analyze_single_section(self, section_content: str, section_name: str, language_hint: str) -> MenuSection:
+        """
+        Analyse une seule section et retourne les items structurés.
+        
+        Args:
+            section_content: Contenu brut de la section
+            section_name: Nom de la section
+            language_hint: Langue du menu
+            
+        Returns:
+            MenuSection: Section structurée avec ses items
+        """
+        start_time = time.time()
+        
+        try:
+            logger.info("Début analyse section", section_name=section_name)
+            
+            prompt = f"""Analyse cette section "{section_name}" et retourne UNIQUEMENT un JSON valide:
+
+{{
+  "name": "nom_section_corrigé",
+  "items": [
+    {{
+      "name": "nom_plat",
+      "price": {{"value": 12.50, "currency": "€"}},
+      "description": "description_complète",
+      "ingredients": ["ingrédient1", "ingrédient2"],
+      "dietary": ["végétarien"]
+    }}
+  ]
+}}
+
+Instructions:
+1. CORRIGE les erreurs OCR évidentes dans le nom de section "{section_name}"
+2. Extrais TOUS les plats de cette section
+3. Prix: utilise €, $, £, CHF pour currency. Si illisible, mets null
+4. Langue: {language_hint}
+5. Régimes alimentaires (prudent): végétarien, végétalien, sans_gluten, sans_lactose
+6. Si grand doute sur régime, laisse dietary vide []
+
+RÈGLES RÉGIMES:
+- végétarien: AUCUNE viande/poisson (œufs/lait OK)
+- végétalien: AUCUN produit animal
+- sans_gluten: AUCUN blé/orge/seigle/avoine
+- sans_lactose: AUCUN lait/crème/fromage/beurre
+
+VIANDES (jamais végétarien): jambon, bacon, pancetta, saucisse, chorizo, salami, coppa, bresaola, bœuf, porc, agneau, veau, poulet, canard, dinde
+
+Retourne UNIQUEMENT le JSON."""
+            
+            response = self.client.messages.create(
+                model="claude-3-5-sonnet-20241022",
+                max_tokens=4000,
+                temperature=0,
+                system=prompt,
+                messages=[{"role": "user", "content": section_content}]
+            )
+            
+            response_text = response.content[0].text if response.content else ""
+            cleaned_response = self._clean_json_response(response_text)
+            parsed_data = json.loads(cleaned_response)
+            
+            # Convertir en MenuSection avec validation
+            items = []
+            for item_data in parsed_data.get("items", []):
+                try:
+                    # Créer Price avec validation
+                    price_data = item_data.get("price", {"value": 0, "currency": "€"})
+                    price = Price(
+                        value=float(price_data.get("value", 0)),
+                        currency=price_data.get("currency", "€")
+                    )
+                    
+                    # Créer MenuItem
+                    menu_item = MenuItem(
+                        name=item_data.get("name", ""),
+                        price=price,
+                        description=item_data.get("description", ""),
+                        ingredients=item_data.get("ingredients", []),
+                        dietary=item_data.get("dietary", [])
+                    )
+                    
+                    items.append(menu_item)
+                    
+                except Exception as item_error:
+                    logger.warning(f"Erreur item {item_data.get('name', 'unknown')}: {item_error}")
+                    continue
+            
+            menu_section = MenuSection(
+                name=parsed_data.get("name", section_name),
+                items=items
+            )
+            
+            processing_time = time.time() - start_time
+            
+            logger.info(
+                "Analyse section terminée",
+                section_name=section_name,
+                corrected_name=menu_section.name,
+                items_count=len(menu_section.items),
+                processing_time=processing_time
+            )
+            
+            return menu_section
+            
+        except Exception as e:
+            logger.error(f"Erreur analyse section {section_name}: {e}")
+            return MenuSection(name=section_name, items=[])
     
     def _build_system_prompt(self, language_hint: str) -> str:
         """
-        Construit le prompt système pour Claude.
+        Construit le prompt système pour Claude (méthode originale).
         
         Args:
             language_hint: Langue du menu

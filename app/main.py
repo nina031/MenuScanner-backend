@@ -9,6 +9,7 @@ import logging
 from app.core.config import settings
 from app.core.exceptions import MenuScannerException
 from app.api.router import router as api_router
+from app.api.endpoints.websocket import router as websocket_router
 
 # Configuration du logging
 logging.basicConfig(level=logging.DEBUG)  # Set the logging level
@@ -74,6 +75,11 @@ def create_app() -> FastAPI:
             400: {"description": "Erreur de validation"},
             500: {"description": "Erreur interne du serveur"}
         }
+    )
+    app.include_router(
+        websocket_router,
+        prefix="/api",
+        tags=["websocket"]
     )
     
     # Route racine pour vérification rapide
