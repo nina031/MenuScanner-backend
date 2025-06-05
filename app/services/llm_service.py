@@ -1,7 +1,6 @@
-# app/services/llm_service.py
 import json
 import time
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, List
 from anthropic import Anthropic
 from anthropic.types import MessageParam
 import structlog

@@ -1,9 +1,7 @@
-# app/main.py
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import structlog
-import sys
 import logging
 
 from app.core.config import settings
@@ -11,8 +9,7 @@ from app.core.exceptions import MenuScannerException
 from app.api.router import router as api_router
 from app.api.endpoints.websocket import router as websocket_router
 
-# Configuration du logging
-logging.basicConfig(level=logging.DEBUG)  # Set the logging level
+logging.basicConfig(level=logging.DEBUG)
 
 structlog.configure(
     processors=[
@@ -22,7 +19,7 @@ structlog.configure(
         structlog.stdlib.PositionalArgumentsFormatter(),
         structlog.processors.TimeStamper(fmt="iso"),
         structlog.processors.StackInfoRenderer(),
-        structlog.dev.ConsoleRenderer(colors=True)  # Couleurs pour plus de lisibilité
+        structlog.dev.ConsoleRenderer(colors=True)
     ],
     context_class=dict,
     logger_factory=structlog.stdlib.LoggerFactory(),
@@ -34,8 +31,6 @@ logger = structlog.get_logger()
 
 
 def create_app() -> FastAPI:
-    """Crée l'application FastAPI."""
-    
     app = FastAPI(
         title=settings.app_name,
         version=settings.app_version,
@@ -45,18 +40,16 @@ def create_app() -> FastAPI:
         redoc_url="/redoc" if settings.debug else None,
     )
     
-    # Middleware CORS pour le frontend React Native
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # À restreindre en production
+        allow_origins=["*"],
         allow_credentials=True,
         allow_methods=["*"],
-        allow_headers=["*"],
+        allow_headers=["*"]
     )
     
-    # Gestionnaire d'erreurs global pour nos exceptions custom
     @app.exception_handler(MenuScannerException)
-    async def menu_scanner_exception_handler(request, exc: MenuScannerException):
+    async def menu_scanner_exception_handler(_, exc: MenuScannerException):
         return JSONResponse(
             status_code=400,
             content={
@@ -67,7 +60,6 @@ def create_app() -> FastAPI:
             }
         )
     
-    # Inclure les routers API
     app.include_router(
         api_router,
         prefix="/api",
@@ -82,7 +74,6 @@ def create_app() -> FastAPI:
         tags=["websocket"]
     )
     
-    # Route racine pour vérification rapide
     @app.get("/")
     async def root():
         return {
@@ -101,7 +92,6 @@ def create_app() -> FastAPI:
     return app
 
 
-# Créer l'instance de l'application
 app = create_app()
 
 

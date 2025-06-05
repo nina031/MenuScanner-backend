@@ -1,13 +1,9 @@
-# app/models/request.py
 from typing import Optional
 from pydantic import BaseModel, Field
 
 
 class ScanMenuRequest(BaseModel):
-    """Modèle de requête pour le scan de menu."""
     
-    # Le fichier sera géré via FastAPI UploadFile
-    # Ce modèle peut être étendu pour des paramètres additionnels
     
     language_hint: Optional[str] = Field(
         default="fr", 

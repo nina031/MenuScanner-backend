@@ -1,17 +1,14 @@
-# app/models/response.py
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
 from datetime import datetime
 
 
 class Price(BaseModel):
-    """Modèle pour un prix."""
     value: float = Field(..., description="Valeur du prix")
     currency: Optional[str] = Field(None, description="Devise (€, $, £, CHF)")
 
 
 class MenuItem(BaseModel):
-    """Modèle pour un item de menu."""
     name: str = Field(..., description="Nom du plat")
     price: Price = Field(..., description="Prix du plat")
     description: str = Field(..., description="Description du plat")
@@ -20,30 +17,26 @@ class MenuItem(BaseModel):
 
 
 class MenuSection(BaseModel):
-    """Modèle pour une section de menu."""
     name: str = Field(..., description="Nom de la section")
     items: List[MenuItem] = Field(default_factory=list, description="Items de la section")
 
 
 class Menu(BaseModel):
-    """Modèle pour un menu complet."""
     name: Optional[str] = Field(None, description="Nom du restaurant/menu")
     sections: List[MenuSection] = Field(default_factory=list, description="Sections du menu")
 
 
 class MenuData(BaseModel):
-    """Modèle pour les données de menu structurées."""
     menu: Menu = Field(..., description="Menu structuré")
 
 
 class ScanMenuResponse(BaseModel):
-    """Modèle de réponse pour le scan de menu."""
     success: bool = Field(..., description="Statut du traitement")
     message: str = Field(..., description="Message de statut")
     data: Optional[MenuData] = Field(None, description="Données du menu si succès")
     processing_time_seconds: float = Field(..., description="Temps de traitement en secondes")
     scan_id: str = Field(..., description="Identifiant unique du scan")
-    timestamp: datetime = Field(default_factory=datetime.utcnow, description="Horodatage")
+    timestamp: datetime = Field(default_factory=datetime.now, description="Horodatage")
     
     class Config:
         json_schema_extra = {
@@ -77,17 +70,15 @@ class ScanMenuResponse(BaseModel):
 
 
 class ErrorResponse(BaseModel):
-    """Modèle de réponse d'erreur."""
     success: bool = Field(default=False, description="Statut (toujours False pour erreur)")
     message: str = Field(..., description="Message d'erreur")
     error_code: Optional[str] = Field(None, description="Code d'erreur spécifique")
     details: Optional[Dict[str, Any]] = Field(None, description="Détails additionnels")
-    timestamp: datetime = Field(default_factory=datetime.utcnow, description="Horodatage")
+    timestamp: datetime = Field(default_factory=datetime.now, description="Horodatage")
 
 
 class HealthResponse(BaseModel):
-    """Modèle de réponse pour le health check."""
     status: str = Field(..., description="Statut de l'application")
     version: str = Field(..., description="Version de l'application")
-    timestamp: datetime = Field(default_factory=datetime.utcnow, description="Horodatage")
+    timestamp: datetime = Field(default_factory=datetime.now, description="Horodatage")
     services: Dict[str, str] = Field(default_factory=dict, description="Statut des services")

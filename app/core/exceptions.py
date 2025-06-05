@@ -1,9 +1,7 @@
-# app/core/exceptions.py
 from typing import Any, Dict, Optional
 
 
 class MenuScannerException(Exception):
-    """Exception de base pour MenuScanner."""
     
     def __init__(
         self,
@@ -18,25 +16,20 @@ class MenuScannerException(Exception):
 
 
 class FileValidationError(MenuScannerException):
-    """Erreur de validation de fichier."""
     pass
 
 
 class StorageError(MenuScannerException):
-    """Erreur de stockage cloud."""
     pass
 
 
 class OCRError(MenuScannerException):
-    """Erreur de traitement OCR."""
     pass
 
 
 class LLMError(MenuScannerException):
-    """Erreur de traitement LLM."""
     pass
 
 
 class PipelineError(MenuScannerException):
-    """Erreur du pipeline de traitement."""
     pass

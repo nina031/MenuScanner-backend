@@ -1,4 +1,3 @@
-# app/utils/validators.py
 from fastapi import UploadFile
 from PIL import Image
 import io

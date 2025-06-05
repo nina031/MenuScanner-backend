@@ -1,4 +1,3 @@
-# app/services/ocr_service.py
 import asyncio
 from azure.ai.formrecognizer import DocumentAnalysisClient
 from azure.core.credentials import AzureKeyCredential

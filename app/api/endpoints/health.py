@@ -1,4 +1,3 @@
-# app/api/endpoints/health.py
 from fastapi import APIRouter, HTTPException
 import structlog
 
@@ -12,20 +11,9 @@ router = APIRouter()
 
 @router.get("/health", response_model=HealthResponse)
 async def health_check():
-    """
-    Endpoint de vérification de santé de l'application.
-    
-    Vérifie:
-    - Statut de l'application
-    - Connexion au stockage R2
-    - Azure Document Intelligence OCR
-    - Claude LLM API
-    """
     try:
-        # Utiliser le health check du pipeline qui teste tous les services
         pipeline_health = await pipeline_service.health_check()
         
-        # Déterminer le statut global
         global_status = pipeline_health["pipeline"]
         services_status = pipeline_health["services"]
         

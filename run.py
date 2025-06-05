@@ -1,13 +1,7 @@
-# run.py
-"""
-Script de démarrage pour le backend MenuScanner.
-Place ce fichier à la racine du dossier backend/ (à côté de requirements.txt)
-"""
 import uvicorn
 import sys
 import os
 
-# Ajouter le dossier app au path Python
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from app.main import app

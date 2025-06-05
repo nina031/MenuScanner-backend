@@ -1,9 +1,8 @@
-# app/services/storage_service.py
 import uuid
 import boto3
-from botocore.exceptions import ClientError, NoCredentialsError
+from botocore.exceptions import ClientError
 from typing import Optional, BinaryIO
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import structlog
 
 from app.core.config import settings
@@ -13,17 +12,14 @@ logger = structlog.get_logger()
 
 
 class StorageService:
-    """Service de gestion du stockage Cloudflare R2."""
-    
     def __init__(self):
-        """Initialise le client R2."""
         try:
             self.client = boto3.client(
                 's3',
                 endpoint_url=settings.cloudflare_endpoint_url,
                 aws_access_key_id=settings.cloudflare_access_key_id,
                 aws_secret_access_key=settings.cloudflare_secret_access_key,
-                region_name='auto'  # R2 utilise 'auto' comme région
+                region_name='auto'
             )
             self.bucket_name = settings.cloudflare_bucket_name
             logger.info("Client R2 initialisé avec succès")
@@ -37,32 +33,15 @@ class StorageService:
         file_extension: str,
         content_type: Optional[str] = None
     ) -> str:
-        """
-        Upload un fichier temporaire dans R2.
-        
-        Args:
-            file_content: Contenu du fichier
-            file_extension: Extension du fichier (ex: '.jpg')
-            content_type: Type MIME du fichier
-            
-        Returns:
-            str: Clé unique du fichier uploadé
-            
-        Raises:
-            StorageError: Si l'upload échoue
-        """
         try:
-            # Générer une clé unique pour le fichier
             file_key = self._generate_temp_file_key(file_extension)
             
-            # Métadonnées pour le fichier
             metadata = {
-                'upload_timestamp': datetime.utcnow().isoformat(),
+                'upload_timestamp': datetime.now(timezone.utc).isoformat(),
                 'retention_hours': str(settings.temp_file_retention_hours),
                 'scanner_version': settings.app_version
             }
             
-            # Paramètres d'upload
             upload_params = {
                 'Bucket': self.bucket_name,
                 'Key': file_key,
@@ -70,11 +49,9 @@ class StorageService:
                 'Metadata': metadata
             }
             
-            # Ajouter le content-type si fourni
             if content_type:
                 upload_params['ContentType'] = content_type
             
-            # Upload le fichier
             self.client.put_object(**upload_params)
             
             logger.info(
