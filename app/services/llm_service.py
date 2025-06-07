@@ -60,7 +60,7 @@ class LLMService:
             
             # Appel à Claude
             response = self.client.messages.create(
-                model="claude-3-5-sonnet-20241022",
+                model="claude-3-5-haiku-20241022",
                 max_tokens=8192,
                 temperature=0,
                 system=system_prompt,
@@ -132,10 +132,12 @@ class LLMService:
 }
 
 Instructions:
-1. Identifie le titre/nom du restaurant (généralement en haut du menu)
+1. OBLIGATOIRE: Génère TOUJOURS un titre. Identifie d'abord le nom du restaurant s'il est présent dans le texte. Sinon, crée un titre descriptif représentatif du type de cuisine (exemple: "Restaurant Italien", "Brasserie Française", "Pizzeria"). Ne jamais retourner null pour le titre
 2. Liste toutes les sections du menu (ENTRÉES, PLATS, DESSERTS, PIZZAS, etc.)
-3. Garde les noms EXACTS des sections comme ils apparaissent dans le texte
-4. Retourne UNIQUEMENT le JSON, sans texte additionnel"""
+3. CRUCIAL: Copie EXACTEMENT les noms des sections tels qu'ils apparaissent dans le texte OCR - ne change AUCUN caractère, même les erreurs d'OCR, accents manqués, espaces bizarres, ou fautes de frappe
+4. Exemple: si le texte contient "ENTREES" avec accent manqué, garde "ENTREES", pas "ENTRÉES"
+5. Exemple: si le texte contient "P1ZZAS" avec OCR défaillant, garde "P1ZZAS", pas "PIZZAS"
+6. Retourne UNIQUEMENT le JSON, sans texte additionnel"""
             
             response = self.client.messages.create(
                 model="claude-3-5-sonnet-20241022",
@@ -151,12 +153,27 @@ Instructions:
             
             processing_time = time.time() - start_time
             
+            # Log détaillé des sections détectées
+            sections_list = result.get("sections", [])
+            menu_title = result.get("menu_title")
+            
             logger.info(
-                "Détection sections terminée",
-                menu_title=result.get("menu_title"),
-                sections_count=len(result.get("sections", [])),
+                "📋 SECTIONS DÉTECTÉES",
+                menu_title=menu_title,
+                sections_count=len(sections_list),
+                sections_list=sections_list,
                 processing_time=processing_time
             )
+            
+            # Log spécifique pour le titre
+            if menu_title:
+                logger.info(f"🏪 TITRE DU MENU: {menu_title}")
+            else:
+                logger.info("⚠️ Aucun titre de menu détecté")
+            
+            # Log spécifique pour chaque section
+            for i, section in enumerate(sections_list, 1):
+                logger.info(f"📂 Section {i}/{len(sections_list)}: {section}")
             
             return result
             
@@ -188,19 +205,39 @@ Instructions:
                     capturing = True
                     continue
                 elif capturing:
-                    # Arrêter si on trouve une autre section
-                    if any(other_section.upper() in line.upper().replace(" ", "")
-                          for other_section in section_names 
-                          if other_section != section_name):
+                    # Arrêter si on trouve une autre section (correspondance exacte uniquement)
+                    line_clean = line.upper().replace(" ", "").strip()
+                    found_other_section = False
+                    
+                    for other_section in section_names:
+                        if other_section != section_name:
+                            other_clean = other_section.upper().replace(" ", "")
+                            # Correspondance exacte seulement - pas de sous-chaîne
+                            if line_clean == other_clean:
+                                found_other_section = True
+                                break
+                    
+                    if found_other_section:
                         break
                     content.append(line)
             
             sections_content[section_name] = '\n'.join(content).strip()
         
+        # Log détaillé du contenu extrait pour chaque section
         logger.info(
-            "Extraction contenu sections terminée",
+            "📝 EXTRACTION CONTENU SECTIONS TERMINÉE",
             sections_extracted=len(sections_content)
         )
+        
+        # Log du contenu de chaque section avec aperçu
+        for section_name, content in sections_content.items():
+            content_preview = content[:100].replace('\n', ' ') if content else "[VIDE]"
+            logger.info(
+                f"📄 CONTENU SECTION '{section_name}'",
+                section_name=section_name,
+                content_length=len(content),
+                content_preview=content_preview + ("..." if len(content) > 100 else "")
+            )
         
         return sections_content
 
@@ -231,7 +268,8 @@ Instructions:
       "price": {{"value": 12.50, "currency": "€"}},
       "description": "description_complète",
       "ingredients": ["ingrédient1", "ingrédient2"],
-      "dietary": ["végétarien"]
+      "dietary": ["végétarien"],
+      "allergens": ["Gluten", "Produits laitiers"]
     }}
   ]
 }}
@@ -241,14 +279,34 @@ Instructions:
 2. Extrais TOUS les plats de cette section
 3. Prix: utilise €, $, £, CHF pour currency. Si illisible, mets null
 4. Langue: {language_hint}
-5. Régimes alimentaires (prudent): végétarien, végétalien, sans_gluten, sans_lactose
+5. Régimes alimentaires (prudent): végétarien, vegan, pescetarien
 6. Si grand doute sur régime, laisse dietary vide []
+7. ALLERGÈNES: OBLIGATOIRE - Liste des allergènes présents (liste vide [] si aucun) parmi cette liste officielle UE:
+   ["Gluten", "Crustacés", "Œufs", "Poissons", "Arachides", "Soja", "Produits laitiers", "Fruits à coque", "Céleri", "Moutarde", "Sésame", "Sulfites", "Lupin", "Mollusques"]
 
 RÈGLES RÉGIMES:
 - végétarien: AUCUNE viande/poisson (œufs/lait OK)
-- végétalien: AUCUN produit animal
-- sans_gluten: AUCUN blé/orge/seigle/avoine
-- sans_lactose: AUCUN lait/crème/fromage/beurre
+- vegan: AUCUN produit animal (pas viande, poisson, œufs, lait, miel, beurre)
+- pescetarien: AUCUNE viande (poisson/fruits de mer OK, œufs/lait OK)
+
+RÈGLES ALLERGÈNES (ANALYSE OBLIGATOIRE):
+- Gluten: blé, pâtes, pain, pizza, panure, farine, biscuits, semoule
+- Produits laitiers: fromage, crème, beurre, lait, mascarpone, parmesan, mozzarella, burrata, gorgonzola, ricotta, yaourt
+- Œufs: œufs entiers, mayo, carbonara, certaines pâtes fraîches
+- Fruits à coque: noisettes, amandes, noix, pistaches, pignons de pin, noix de cajou
+- Poissons: thon, anchois, saumon, morue, etc.
+- Crustacés: crevettes, langoustines, crabes, homard
+- Mollusques: moules, huîtres, escargots, poulpes
+
+EXEMPLES CONCRETS:
+- Pizza margherita → ["Gluten", "Produits laitiers"] (pâte + mozzarella)
+- Salade César → ["Œufs", "Produits laitiers"] (mayo + parmesan)
+- Pâtes carbonara → ["Gluten", "Œufs", "Produits laitiers"] (pâtes + œufs + fromage)
+- Risotto aux champignons → ["Produits laitiers"] (parmesan)
+- Saumon grillé → ["Poissons"]
+- Salade verte simple → [] (aucun allergène)
+
+IMPORTANT: Le champ "allergens" doit TOUJOURS être présent dans le JSON, même si c'est une liste vide [].
 
 VIANDES (jamais végétarien): jambon, bacon, pancetta, saucisse, chorizo, salami, coppa, bresaola, bœuf, porc, agneau, veau, poulet, canard, dinde
 
@@ -266,30 +324,79 @@ Retourne UNIQUEMENT le JSON."""
             cleaned_response = self._clean_json_response(response_text)
             parsed_data = json.loads(cleaned_response)
             
+            # DEBUG: Log de la réponse LLM pour diagnostiquer les allergènes
+            logger.info(
+                f"🧪 DEBUG LLM RESPONSE pour section {section_name}",
+                section_name=section_name,
+                response_preview=cleaned_response[:500] + "..." if len(cleaned_response) > 500 else cleaned_response
+            )
+            
             # Convertir en MenuSection avec validation
             items = []
-            for item_data in parsed_data.get("items", []):
+            total_items_in_response = len(parsed_data.get("items", []))
+            logger.info(f"🧪 PARSING {total_items_in_response} items pour section {section_name}")
+            
+            for index, item_data in enumerate(parsed_data.get("items", [])):
+                item_name = item_data.get("name", f"Item_{index}")
+                logger.info(f"🧪 PARSING item {index+1}/{total_items_in_response}: '{item_name}'")
                 try:
-                    # Créer Price avec validation
+                    # Créer Price avec validation robuste
                     price_data = item_data.get("price", {"value": 0, "currency": "€"})
+                    
+                    # Gérer les cas où price est null ou invalide
+                    if price_data is None or not isinstance(price_data, dict):
+                        logger.warning(f"Prix invalide pour '{item_name}': {price_data}, utilisation prix par défaut")
+                        price_data = {"value": 0, "currency": "€"}
+                    
+                    # Gérer les cas où value est null, string, ou invalide
+                    price_value = price_data.get("value", 0)
+                    if price_value is None:
+                        price_value = 0
+                    elif isinstance(price_value, str):
+                        try:
+                            price_value = float(price_value.replace(",", "."))
+                        except ValueError:
+                            logger.warning(f"Prix string invalide pour '{item_name}': '{price_value}', utilisation 0")
+                            price_value = 0
+                    
                     price = Price(
-                        value=float(price_data.get("value", 0)),
-                        currency=price_data.get("currency", "€")
+                        value=float(price_value),
+                        currency=price_data.get("currency", "€") or "€"
                     )
                     
-                    # Créer MenuItem
+                    # Créer MenuItem avec gestion gracieuse des allergènes
+                    allergens_detected = item_data.get("allergens", [])
+                    
+                    # S'assurer que allergens est une liste valide
+                    if not isinstance(allergens_detected, list):
+                        logger.warning(f"Allergènes invalides pour '{item_name}': {allergens_detected}, utilisation liste vide")
+                        allergens_detected = []
+                    
                     menu_item = MenuItem(
-                        name=item_data.get("name", ""),
+                        name=item_data.get("name", "Plat sans nom"),
                         price=price,
                         description=item_data.get("description", ""),
-                        ingredients=item_data.get("ingredients", []),
-                        dietary=item_data.get("dietary", [])
+                        ingredients=item_data.get("ingredients", []) if isinstance(item_data.get("ingredients"), list) else [],
+                        dietary=item_data.get("dietary", []) if isinstance(item_data.get("dietary"), list) else [],
+                        allergens=allergens_detected
                     )
                     
+                    # DEBUG: Log des allergènes par item
+                    if allergens_detected:
+                        logger.info(
+                            f"🧪 ALLERGÈNES DÉTECTÉS pour '{menu_item.name}': {allergens_detected}"
+                        )
+                    else:
+                        logger.info(
+                            f"🧪 AUCUN ALLERGÈNE pour '{menu_item.name}'"
+                        )
+                    
                     items.append(menu_item)
+                    logger.info(f"✅ ITEM AJOUTÉ: '{item_name}'")
                     
                 except Exception as item_error:
-                    logger.warning(f"Erreur item {item_data.get('name', 'unknown')}: {item_error}")
+                    logger.error(f"❌ ERREUR PARSING ITEM '{item_name}': {item_error}")
+                    logger.error(f"❌ DONNÉES ITEM: {item_data}")
                     continue
             
             menu_section = MenuSection(
@@ -297,15 +404,38 @@ Retourne UNIQUEMENT le JSON."""
                 items=items
             )
             
+            logger.info(
+                f"🧪 SECTION FINALE '{section_name}': {len(items)}/{total_items_in_response} items conservés"
+            )
+            
             processing_time = time.time() - start_time
             
+            # Log détaillé de l'analyse de section
             logger.info(
-                "Analyse section terminée",
+                f"✅ ANALYSE SECTION '{section_name}' TERMINÉE",
                 section_name=section_name,
                 corrected_name=menu_section.name,
                 items_count=len(menu_section.items),
                 processing_time=processing_time
             )
+            
+            # Log des items détectés dans cette section
+            if menu_section.items:
+                logger.info(f"🍽️ Items détectés dans '{menu_section.name}':")
+                for i, item in enumerate(menu_section.items, 1):
+                    price_str = f"{item.price.value}{item.price.currency}" if item.price.value > 0 else "Prix non détecté"
+                    dietary_str = ", ".join(item.dietary) if item.dietary else "Aucun régime spécial"
+                    
+                    logger.info(
+                        f"  {i}. {item.name}",
+                        item_name=item.name,
+                        price=price_str,
+                        description_length=len(item.description) if item.description else 0,
+                        ingredients_count=len(item.ingredients),
+                        dietary=dietary_str
+                    )
+            else:
+                logger.warning(f"⚠️ Aucun item détecté dans la section '{menu_section.name}'")
             
             return menu_section
             
@@ -364,10 +494,10 @@ VIANDES (jamais végétarien):
 Jambon, bacon, pancetta, saucisse, chorizo, salami, coppa, bresaola, bœuf, porc, agneau, veau, poulet, canard, dinde
 
 EXEMPLES:
-- Salade verte simple = ["végétarien", "végétalien"]
-- Pizza margherita = ["végétarien"] (fromage = lait)
-- Steak frites = ["sans_gluten", "sans_lactose"] (si frites maison)
-- Pâtes carbonara = [] (œufs + lardons = ni végétarien ni végétalien)
+- Salade verte simple = ["végétarien", "vegan", "pescetarien"]
+- Pizza margherita = ["végétarien", "pescetarien"] (fromage = lait, donc pas vegan)
+- Saumon grillé = ["pescetarien"] (poisson OK pour pescetarien seulement)
+- Pâtes carbonara = [] (œufs + lardons = ni végétarien ni vegan ni pescetarien)
 
 IMPORTANT: Inclus TOUS les éléments du texte OCR. Ne laisse rien de côté."""
 

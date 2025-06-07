@@ -1,7 +1,7 @@
 import uuid
 import asyncio
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, Set
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, UploadFile, File, Form, HTTPException
 import structlog
 
@@ -15,6 +15,10 @@ from app.core.exceptions import FileValidationError, StorageError
 
 logger = structlog.get_logger()
 router = APIRouter()
+
+# Protection contre les traitements multiples
+active_scans: Set[str] = set()
+connection_scans: dict[str, str] = {}  # connection_id -> scan_id actuel
 
 
 @router.websocket("/ws")
@@ -50,6 +54,12 @@ async def websocket_endpoint(websocket: WebSocket):
         logger.error("Erreur WebSocket", connection_id=connection_id, error=str(e))
     finally:
         websocket_manager.disconnect(connection_id)
+        # Nettoyer les scans actifs pour cette connexion
+        if connection_id in connection_scans:
+            scan_id = connection_scans[connection_id]
+            active_scans.discard(scan_id)
+            del connection_scans[connection_id]
+            logger.info("Scan nettoyé après déconnexion", connection_id=connection_id, scan_id=scan_id)
 
 
 @router.post("/upload-and-process")
@@ -79,6 +89,25 @@ async def upload_and_process_websocket(
                 }
             )
         
+        # Vérifier si cette connexion a déjà un scan en cours
+        if connection_id in connection_scans:
+            existing_scan_id = connection_scans[connection_id]
+            logger.warning(
+                "Tentative de double traitement détectée",
+                connection_id=connection_id,
+                existing_scan_id=existing_scan_id,
+                new_scan_id=scan_id
+            )
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "success": False,
+                    "message": f"Un traitement est déjà en cours pour cette connexion (scan: {existing_scan_id})",
+                    "error_code": "PROCESSING_ALREADY_IN_PROGRESS",
+                    "existing_scan_id": existing_scan_id
+                }
+            )
+        
         await validate_image_file(file)
         
         file_content = await file.read()
@@ -98,19 +127,31 @@ async def upload_and_process_websocket(
             connection_id=connection_id
         )
         
+        # Marquer le scan comme actif
+        active_scans.add(scan_id)
+        connection_scans[connection_id] = scan_id
+        
         processing_options = {
             "cleanup_temp_file": cleanup_temp_file
         }
         
-        asyncio.create_task(
-            pipeline_service.process_menu_image_websocket(
-                file_key=file_key,
-                connection_id=connection_id,
-                scan_id=scan_id,
-                language_hint=language_hint,
-                processing_options=processing_options
-            )
-        )
+        # Créer une tâche avec cleanup automatique
+        async def process_with_cleanup():
+            try:
+                await pipeline_service.process_menu_image_websocket(
+                    file_key=file_key,
+                    connection_id=connection_id,
+                    scan_id=scan_id,
+                    language_hint=language_hint,
+                    processing_options=processing_options
+                )
+            finally:
+                # Nettoyer les scans actifs
+                active_scans.discard(scan_id)
+                connection_scans.pop(connection_id, None)
+                logger.info("Scan terminé et nettoyé", scan_id=scan_id, connection_id=connection_id)
+        
+        asyncio.create_task(process_with_cleanup())
         
         return success_response(
             "Traitement démarré avec succès",

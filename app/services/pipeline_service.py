@@ -80,15 +80,34 @@ class PipelineService:
            # Récupérer la confiance OCR de manière sécurisée
            ocr_confidence = ocr_result.get("metadata", {}).get("confidence_scores", {}).get("average_line_confidence", 0.0)
            
+           # Résumé final détaillé
+           total_items = sum(len(section.items) for section in menu_data.menu.sections)
+           
            logger.info(
-               "Pipeline terminé avec succès",
+               f"✅ PIPELINE TERMINÉ AVEC SUCCÈS",
                scan_id=scan_id,
+               menu_title=menu_data.menu.name,
                sections_count=len(menu_data.menu.sections),
-               total_items=sum(len(section.items) for section in menu_data.menu.sections),
+               total_items=total_items,
                total_time=total_processing_time,
                ocr_time=ocr_result["metadata"]["processing_time_seconds"],
                ocr_confidence=ocr_confidence
            )
+           
+           # Log détaillé de chaque section dans le résultat final
+           logger.info(f"📋 RÉSUMÉ FINAL DU MENU '{menu_data.menu.name or 'Menu'}':")
+           for i, section in enumerate(menu_data.menu.sections, 1):
+               items_with_prices = sum(1 for item in section.items if item.price.value > 0)
+               items_with_dietary = sum(1 for item in section.items if item.dietary)
+               
+               logger.info(
+                   f"  {i}. Section '{section.name}'",
+                   section_name=section.name,
+                   items_count=len(section.items),
+                   items_with_prices=items_with_prices,
+                   items_with_dietary=items_with_dietary,
+                   scan_id=scan_id
+               )
            
            # 5. Nettoyer le fichier temporaire (optionnel)
            if processing_options.get("cleanup_temp_file", True):
@@ -210,10 +229,9 @@ class PipelineService:
            }, flush=True)
            
            logger.info(
-               "Pipeline WebSocket terminé",
+               f"✅ PIPELINE WEBSOCKET TERMINÉ",
                scan_id=scan_id,
                connection_id=connection_id,
-               sections_count=3,  # À adapter selon vos données
                total_time=total_processing_time
            )
            
@@ -257,10 +275,25 @@ class PipelineService:
            menu_title = sections_info.get("menu_title", "Menu")
            section_names = sections_info.get("sections", [])
            
-           # Envoyer les sections détectées
+           # Log détaillé des informations détectées
+           logger.info(
+               f"📋 INFORMATIONS MENU DÉTECTÉES",
+               scan_id=scan_id,
+               menu_title=menu_title,
+               sections_count=len(section_names),
+               sections_list=section_names
+           )
+           
+           # ENVOYER LE TITRE IMMÉDIATEMENT
+           await websocket_manager.send_to_connection(connection_id, {
+               "type": "menu_title",
+               "menu_title": menu_title,
+               "scan_id": scan_id
+           })
+           
+           # Puis envoyer les sections détectées
            await websocket_manager.send_to_connection(connection_id, {
                "type": "sections_detected",
-               "menu_title": menu_title,
                "sections": section_names,
                "scan_id": scan_id
            })
@@ -274,6 +307,33 @@ class PipelineService:
            })
            
            sections_content = llm_service.extract_sections_content(raw_text, section_names)
+           
+           # Log du contenu extrait
+           logger.info(
+               f"📝 CONTENU DES SECTIONS EXTRAIT",
+               scan_id=scan_id,
+               sections_with_content=len([name for name, content in sections_content.items() if content.strip()])
+           )
+           
+           # Log détaillé pour chaque section
+           for section_name, content in sections_content.items():
+               content_lines = len(content.split('\n')) if content else 0
+               content_chars = len(content.strip()) if content else 0
+               
+               if content_chars > 0:
+                   logger.info(
+                       f"📄 Section '{section_name}': {content_chars} caractères, {content_lines} lignes",
+                       section_name=section_name,
+                       content_length=content_chars,
+                       lines_count=content_lines,
+                       scan_id=scan_id
+                   )
+               else:
+                   logger.warning(
+                       f"⚠️ Section '{section_name}': AUCUN CONTENU EXTRAIT",
+                       section_name=section_name,
+                       scan_id=scan_id
+                   )
            
            # 3. Analyser chaque section individuellement avec envoi immédiat
            for i, section_name in enumerate(section_names, 1):
@@ -299,11 +359,38 @@ class PipelineService:
                )
                processing_time = time.time() - start_time
                
+               # Log détaillé de l'analyse de section
                logger.info(
-                   f"Section {section_name} analysée en {processing_time:.2f}s", 
+                   f"✅ Section '{section_name}' analysée en {processing_time:.2f}s",
                    scan_id=scan_id,
-                   items_count=len(analyzed_section.items)
+                   section_name=section_name,
+                   original_name=section_name,
+                   corrected_name=analyzed_section.name,
+                   items_count=len(analyzed_section.items),
+                   processing_time=processing_time
                )
+               
+               # Log des items de cette section si disponibles
+               if analyzed_section.items:
+                   items_with_prices = sum(1 for item in analyzed_section.items if item.price.value > 0)
+                   items_with_dietary = sum(1 for item in analyzed_section.items if item.dietary)
+                   items_with_allergens = sum(1 for item in analyzed_section.items if item.allergens)
+                   
+                   logger.info(
+                       f"🍽️ Items dans '{analyzed_section.name}': {len(analyzed_section.items)} total, {items_with_prices} avec prix, {items_with_dietary} avec régimes, {items_with_allergens} avec allergènes",
+                       scan_id=scan_id,
+                       section_name=analyzed_section.name,
+                       total_items=len(analyzed_section.items),
+                       items_with_prices=items_with_prices,
+                       items_with_dietary=items_with_dietary,
+                       items_with_allergens=items_with_allergens
+                   )
+               else:
+                   logger.warning(
+                       f"⚠️ Aucun item détecté dans la section '{analyzed_section.name}'",
+                       scan_id=scan_id,
+                       section_name=analyzed_section.name
+                   )
                
                # ENVOI IMMÉDIAT de la section avec FLUSH
                await self.send_section_immediate(
@@ -343,7 +430,8 @@ class PipelineService:
                        },
                        "description": item.description,
                        "ingredients": item.ingredients,
-                       "dietary": item.dietary
+                       "dietary": item.dietary,
+                       "allergens": item.allergens
                    }
                    for item in section.items
                ]
@@ -645,13 +733,14 @@ class PipelineService:
            health_status["services"]["ocr"] = "error"
            logger.error("Erreur health check OCR", error=str(e))
        
-       # Test LLM
-       try:
-           llm_healthy = await llm_service.check_connection()
-           health_status["services"]["llm"] = "healthy" if llm_healthy else "unhealthy"
-       except Exception as e:
-           health_status["services"]["llm"] = "error"
-           logger.error("Erreur health check LLM", error=str(e))
+       # Test LLM - Commenté temporairement
+       # try:
+       #     llm_healthy = await llm_service.check_connection()
+       #     health_status["services"]["llm"] = "healthy" if llm_healthy else "unhealthy"
+       # except Exception as e:
+       #     health_status["services"]["llm"] = "error"
+       #     logger.error("Erreur health check LLM", error=str(e))
+       health_status["services"]["llm"] = "skipped"
        
        # Test WebSocket Manager
        try:

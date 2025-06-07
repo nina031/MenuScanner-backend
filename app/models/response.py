@@ -14,6 +14,7 @@ class MenuItem(BaseModel):
     description: str = Field(..., description="Description du plat")
     ingredients: List[str] = Field(default_factory=list, description="Liste des ingrédients")
     dietary: List[str] = Field(default_factory=list, description="Tags diététiques")
+    allergens: List[str] = Field(default_factory=list, description="Liste des allergènes présents")
 
 
 class MenuSection(BaseModel):
@@ -55,7 +56,8 @@ class ScanMenuResponse(BaseModel):
                                         "price": {"value": 12.50, "currency": "€"},
                                         "description": "Salade romaine, parmesan, croûtons",
                                         "ingredients": ["salade romaine", "parmesan", "croûtons"],
-                                        "dietary": ["végétarien"]
+                                        "dietary": ["végétarien"],
+                                        "allergens": ["Gluten", "Produits laitiers"]
                                     }
                                 ]
                             }
